@@ -17,20 +17,22 @@
 
 package org.apache.carbondata.core.datastore.filesystem;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.carbondata.common.logging.LogService;
 import org.apache.carbondata.common.logging.LogServiceFactory;
+import org.apache.carbondata.core.constants.CarbonCommonConstants;
 import org.apache.carbondata.core.datastore.impl.FileFactory;
 
+import org.apache.carbondata.core.util.CarbonUtil;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DistributedFileSystem;
-
-
 
 public class AlluxioCarbonFile extends AbstractDFSCarbonFile {
   /**
@@ -93,20 +95,52 @@ public class AlluxioCarbonFile extends AbstractDFSCarbonFile {
   }
 
   @Override
+  public DataOutputStream getDataOutputStreamUsingAppend(String path, FileFactory.FileType fileType)
+      throws IOException {
+    return getDataOutputStream(path, fileType, CarbonCommonConstants.BYTEBUFFER_SIZE, true);
+  }
+
+  @Override
   public boolean renameForce(String changetoName) {
     FileSystem fs;
     try {
-      fs = fileStatus.getPath().getFileSystem(FileFactory.getConfiguration());
-      if (fs instanceof DistributedFileSystem) {
-        ((DistributedFileSystem) fs).rename(fileStatus.getPath(), new Path(changetoName),
-            org.apache.hadoop.fs.Options.Rename.OVERWRITE);
-        return true;
-      } else {
-        return false;
-      }
+      deleteFile(changetoName, FileFactory.getFileType(changetoName));
+      fs = fileStatus.getPath().getFileSystem(hadoopConf);
+      return fs.rename(fileStatus.getPath(), new Path(changetoName));
     } catch (IOException e) {
       LOGGER.error("Exception occured: " + e.getMessage());
       return false;
     }
+  }
+
+  @Override
+  public DataOutputStream getDataOutputStream(
+      String path,
+      FileFactory.FileType fileType,
+      int bufferSize,
+      boolean append) throws IOException {
+    Path pt = new Path(path);
+    FileSystem fileSystem = pt.getFileSystem(FileFactory.getConfiguration());
+    FSDataOutputStream stream;
+    if (append) {
+      // append to a file only if file already exists else file not found
+      // exception will be thrown by hdfs
+      if (CarbonUtil.isFileExists(path)) {
+        LOGGER.warn("Appending data to an existing alluxio file may cause consistency issues");
+        DataInputStream dataInputStream = fileSystem.open(pt);
+        int count = dataInputStream.available();
+        // create buffer
+        byte[] byteStreamBuffer = new byte[count];
+        int bytesRead = dataInputStream.read(byteStreamBuffer);
+        fileSystem.delete(pt,true);
+        stream = fileSystem.create(pt, true, bufferSize);
+        stream.write(byteStreamBuffer, 0, bytesRead);
+      } else {
+        stream = fileSystem.create(pt, true, bufferSize);
+      }
+    } else {
+      stream = fileSystem.create(pt, true, bufferSize);
+    }
+    return stream;
   }
 }
